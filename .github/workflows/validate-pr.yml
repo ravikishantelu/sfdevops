@@ -1,0 +1,85 @@
+name: Validate Pull Request
+
+# -------------------------------------------------------
+# Runs on every PR targeting dev, uat or main.
+# Posts a pass/fail comment back to the PR.
+# Required status check for branch protection on all three
+# branches (1 approval on dev, 2 on uat/main).
+# -------------------------------------------------------
+on:
+  pull_request:
+    branches:
+      - dev
+      - uat
+      - main
+
+jobs:
+  validate:
+    name: Validate Salesforce Metadata
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Salesforce CLI
+        run: |
+          npm install --global @salesforce/cli --omit=dev
+          sf plugins install @salesforce/plugin-deploy-retrieve
+        env:
+          SALESFORCE_CLI_TELEMETRY_DISABLED: true
+
+      - name: Validate metadata structure
+        run: |
+          echo "==> Checking force-app directory"
+          if [ -d "force-app" ]; then
+            echo "force-app found"
+            find force-app -name '*.xml' | wc -l
+          else
+            echo "WARNING: force-app not found yet"
+          fi
+
+      - name: Lint check - scan for TODO/FIXME in Apex
+        run: |
+          if grep -r "TODO\|FIXME" force-app --include="*.cls" --include="*.trigger" 2>/dev/null; then
+            echo "WARNING: TODO/FIXME comments found - please review"
+          else
+            echo "No TODO/FIXME issues found"
+          fi
+
+      - name: Validate sfdx-project.json
+        run: |
+          if [ -f "sfdx-project.json" ]; then
+            node -e "JSON.parse(require('fs').readFileSync('sfdx-project.json','utf8')); console.log('sfdx-project.json is valid JSON')"
+          fi
+
+      - name: Post PR status comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status  = '${{ job.status }}';
+            const icon    = status === 'success' ? '✅' : '❌';
+            const branch  = context.payload.pull_request.head.ref;
+            const base    = context.payload.pull_request.base.ref;
+            const body    = [
+              `## ${icon} Salesforce Metadata Validation`,
+              '',
+              `| Field | Value |`,
+              `|---|---|`,
+              `| Status | **${status.toUpperCase()}** |`,
+              `| PR branch | \`${branch}\` → \`${base}\` |`,
+              `| Commit | \`${{ github.sha }}\` |`,
+              `| Run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |`,
+            ].join('\n');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              body,
+            });

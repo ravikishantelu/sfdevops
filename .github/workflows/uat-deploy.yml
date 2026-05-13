@@ -1,0 +1,82 @@
+name: Deploy to UAT Sandbox
+
+# -------------------------------------------------------
+# Fires automatically when code is merged into the 'uat'
+# branch (PR from dev with 2 required approvals).
+# Runs the full test suite (RunAllTests) to match the
+# stricter UAT acceptance criteria.
+# -------------------------------------------------------
+on:
+  push:
+    branches:
+      - uat
+
+jobs:
+  deploy-uat:
+    name: UAT Sandbox Deployment
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Salesforce CLI
+        run: |
+          npm install --global @salesforce/cli --omit=dev
+          sf plugins install @salesforce/plugin-deploy-retrieve
+        env:
+          SALESFORCE_CLI_TELEMETRY_DISABLED: true
+
+      - name: Authenticate to UAT Sandbox
+        run: |
+          echo "${{ secrets.SFDX_AUTH_URL_UAT }}" > ./auth-uat.txt
+          sf org login sfdx-url --sfdx-url-file ./auth-uat.txt --alias uat-org --set-default
+        env:
+          SALESFORCE_CLI_TELEMETRY_DISABLED: true
+
+      - name: Validate deployment (dry-run)
+        run: |
+          sf project deploy start \
+            --source-dir force-app \
+            --target-org uat-org \
+            --test-level RunAllTests \
+            --dry-run
+        continue-on-error: false
+
+      - name: Deploy to UAT Sandbox
+        run: |
+          sf project deploy start \
+            --source-dir force-app \
+            --target-org uat-org \
+            --test-level RunAllTests
+
+      - name: Run all Apex tests
+        run: |
+          sf apex run test \
+            --target-org uat-org \
+            --code-coverage \
+            --result-format human
+
+      - name: Write deployment summary
+        if: always()
+        run: |
+          echo "## UAT Sandbox Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Status    | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch    | uat |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit    | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Actor     | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| TestLevel | RunAllTests |" >> $GITHUB_STEP_SUMMARY
+          echo "| Time      | $(date -u) |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Cleanup auth files
+        if: always()
+        run: |
+          rm -f ./auth-uat.txt
+          sf org logout --all --no-prompt 2>/dev/null || true
